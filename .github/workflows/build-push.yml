@@ -1,0 +1,92 @@
+name: Build and Push to ECR
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.sha }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag
+        id: meta
+        run: echo "sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: Build Docker images
+        run: ./mvnw clean install -P buildDocker -DskipTests
+
+      - name: Tag and Push all images to ECR
+        run: |
+          ECR_REGISTRY=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+          SHA=${{ steps.meta.outputs.sha }}
+          for SERVICE in config-server discovery-server api-gateway \
+            customers-service vets-service visits-service \
+            genai-service admin-server; do
+            echo "Pushing $SERVICE..."
+            docker tag springcommunity/spring-petclinic-$SERVICE:latest \
+              $ECR_REGISTRY/petclinic-dev/$SERVICE:$SHA
+            docker tag springcommunity/spring-petclinic-$SERVICE:latest \
+              $ECR_REGISTRY/petclinic-dev/$SERVICE:latest
+            docker push $ECR_REGISTRY/petclinic-dev/$SERVICE:$SHA
+            docker push $ECR_REGISTRY/petclinic-dev/$SERVICE:latest
+            echo "✅ $SERVICE pushed"
+          done
+
+  update-image-tags:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout platform repo
+        uses: actions/checkout@v4
+        with:
+          repository: Achievers11-DevOps/petclinic-platform
+          token: ${{ secrets.PLATFORM_REPO_PAT }}
+          ref: main
+
+      - name: Update image tags in helm-values
+        run: |
+          SHA="${{ needs.build-and-push.outputs.image_tag }}"
+          for SERVICE in config-server discovery-server api-gateway \
+            customers-service vets-service visits-service \
+            genai-service admin-server; do
+            sed -i "s/tag: .*/tag: \"$SHA\"/" helm-values/$SERVICE.yaml
+          done
+
+      - name: Commit and push updated tags
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add helm-values/
+          git commit -m "ci: update image tags to ${{ needs.build-and-push.outputs.image_tag }}"
+          git push origin main
