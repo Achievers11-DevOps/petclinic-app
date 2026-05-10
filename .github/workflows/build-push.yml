@@ -76,7 +76,6 @@ jobs:
 
       - name: Update image tags in helm-values
         run: |
-          cd petclinic-platform
           SHA="${{ needs.build-and-push.outputs.image_tag }}"
           for SERVICE in config-server discovery-server api-gateway \
                          customers-service vets-service visits-service \
