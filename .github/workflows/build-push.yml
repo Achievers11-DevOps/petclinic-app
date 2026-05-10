@@ -76,11 +76,18 @@ jobs:
 
       - name: Update image tags in helm-values
         run: |
+          cd petclinic-platform
           SHA="${{ needs.build-and-push.outputs.image_tag }}"
           for SERVICE in config-server discovery-server api-gateway \
-            customers-service vets-service visits-service \
-            genai-service admin-server; do
-            sed -i "s/tag: .*/tag: \"$SHA\"/" helm-values/$SERVICE.yaml
+                         customers-service vets-service visits-service \
+                         genai-service admin-server; do
+            FILE="helm-values/${SERVICE}.yaml"
+            if [ -f "$FILE" ]; then
+              sed -i "s/tag: .*/tag: \"${SHA}\"/" "$FILE"
+              echo "Updated $SERVICE to ${SHA}"
+            else
+              echo "Skipping $SERVICE - not found"
+            fi
           done
 
       - name: Commit and push updated tags
